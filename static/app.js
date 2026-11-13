@@ -7,6 +7,8 @@ let selection = null;
 let firstPoint;
 let selectedBlock;
 let timer;
+let lastSavedMarkdown = '';
+let lastSavedConfirmed = false;
 
 async function request(url, options) {
   const response = await fetch(url, options);
@@ -75,6 +77,7 @@ $('start').onclick = report(async () => {
   $('start').disabled = true;
   message('正在上传照片…');
   try {
+    if (noteId && !$('workspace').hidden && isDirty()) await save();
     const images = await Promise.all(files.map(encode));
     const result = await request('/api/notes', json('POST', {images, same_board: $('same-board').checked}));
     await openNote((await result.json()).id);
@@ -112,6 +115,8 @@ async function openNote(id, page = 0) {
   $('page').value = page;
   $('markdown').value = note.markdown;
   $('confirmed').checked = Boolean(note.confirmed);
+  lastSavedMarkdown = note.markdown;
+  lastSavedConfirmed = Boolean(note.confirmed);
   previewMath();
   showPage();
 }
@@ -209,8 +214,16 @@ function insert(text) {
 }
 
 async function save() {
-  await request(endpoint(''), json('PUT', {markdown: $('markdown').value, confirmed: $('confirmed').checked}));
+  // 记录请求提交时的内容，避免等待期间的新编辑被视为已保存。
+  const markdown = $('markdown').value;
+  const confirmed = $('confirmed').checked;
+  await request(endpoint(''), json('PUT', {markdown, confirmed}));
+  lastSavedMarkdown = markdown;
+  lastSavedConfirmed = confirmed;
   message('修改已保存。');
+}
+function isDirty() {
+  return $('markdown').value !== lastSavedMarkdown || $('confirmed').checked !== lastSavedConfirmed;
 }
 async function retry(corners = null) {
   const index = Number($('page').value);
@@ -220,7 +233,24 @@ async function retry(corners = null) {
 }
 
 $('markdown').oninput = () => { $('confirmed').checked = false; previewMath(); };
-$('history').onchange = report(() => $('history').value && openNote($('history').value));
+$('history').onchange = report(async () => {
+  const selected = $('history').value;
+  if (!selected || selected === noteId) return;
+  try {
+    // 切换历史笔记前先保存当前编辑，保存失败时继续留在当前笔记。
+    if (noteId && !$('workspace').hidden && isDirty()) await save();
+    await openNote(selected);
+  } catch (error) {
+    $('history').value = noteId || '';
+    throw error;
+  }
+});
+window.addEventListener('beforeunload', event => {
+  if (noteId && !$('workspace').hidden && isDirty()) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
 $('page').onchange = () => showPage();
 $('save').onclick = report(save);
 $('retry').onclick = report(() => retry());

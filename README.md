@@ -48,7 +48,7 @@ winget install --id Git.Git -e --source winget
 
 ```powershell
 git init -b main
-git add .gitignore app.py recognition.py verify_samples.py benchmark.py requirements.txt README.md docs static
+git add .gitignore app.py recognition.py verify_samples.py benchmark.py evaluate_formula_detector.py requirements.txt README.md docs static
 git status --short
 git commit -m "Implement Snap2Notes local workflow"
 git remote add origin https://github.com/SumanaWu/Snap2Notes.git
@@ -75,3 +75,15 @@ git push -u origin main
 
 
 标注后可用 `benchmark.py` 比较原图 OCR 和完整流程。清单为 JSON 数组，每项填写相对于清单的 `image`、`surface` 和人工转录的 `text`，例如 `{"image":"blackboard.jpg","surface":"blackboard","text":"人工转录"}`。固定同一清单和图片顺序，分别在独立进程运行 `python benchmark.py manifest.json --pipeline raw` 与 `python benchmark.py manifest.json --pipeline full`。两次运行均使用同一个虚拟环境和设备配置。
+
+## Pix2Text 公式检测对照
+
+在单独的 Windows CPU 测试环境中，使用 Pix2Text 1.1.4、CnSTD 1.2.8、RapidOCR 3.9.2、ONNX Runtime 1.19.2 和 MFD 1.5 权重。对四张前述样例直接检测时，三个实拍样例均无候选，官方公式图有一个候选。黑板反色并对三张实拍各做四个 65% 重叠分块后，黑板得到 5 个候选，白板和纸笔各得到 1 个候选。人工查看裁剪图发现黑板候选中包含公式，也包含英文文字与较大混合区域，白板候选包含数字和图形。测试样本较少，尚无法计算召回率和误检率。检测结果用于人工对照，主流程继续使用已配置的版面模型与手动补圈。 [MFD 1.5 模型卡](https://huggingface.co/breezedeus/pix2text-mfd-1.5) · [Pix2Text 检测器源码](https://github.com/breezedeus/Pix2Text/blob/main/pix2text/formula_detector.py)
+
+使用独立环境安装上述版本并下载模型卡中的 `pix2text-mfd-1.5.onnx` 后，可以运行以下命令。输出坐标对应经 EXIF 方向校正后的原图。重叠分块可能产生重复候选，输出保留每个分块的检测结果，便于人工复核。
+
+```powershell
+python evaluate_formula_detector.py 模型路径 照片路径 --surface blackboard --tiles --output 候选.json
+```
+
+大幅板书可以通过设置 `$env:SNAP_LAYOUT_TILES='1'` 试用重叠分块版面检测。在现有黑板和白板样例上，CPU 测试分别耗时约 26.6 秒和 14.7 秒，未检出额外公式或图形。该选项默认关闭，效果仍需在更多标注照片上验证。

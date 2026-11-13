@@ -51,6 +51,13 @@ def overlap(a, b):
     return intersection / max(1, min((r - x) * (d - y), (s - u) * (t - v)))
 
 
+def covered_fraction(inner, outer):
+    x, y, right, bottom = inner
+    left, top, other_right, other_bottom = outer
+    intersection = max(0, min(right, other_right) - max(x, left)) * max(0, min(bottom, other_bottom) - max(y, top))
+    return intersection / max(1, (right - x) * (bottom - y))
+
+
 def ordered_quad(points):
     points = np.array(points, dtype=np.float32)
     center = points.mean(axis=0)
@@ -110,6 +117,34 @@ def plain_ocr(image):
             for text, score, poly in zip(data["rec_texts"], data["rec_scores"], data["rec_polys"])]
 
 
+def layout_regions(image, surface):
+    regions = list(payload(next(iter(model("layout").predict(image))))["boxes"])
+    if surface == "paper" or os.getenv("SNAP_LAYOUT_TILES") != "1":
+        return regions
+    height, width = image.shape[:2]
+    # 对远距离板书局部放大检测，原图区域继续参与后续去重。
+    tile_width, tile_height = int(width * 0.65), int(height * 0.65)
+    for top in (0, height - tile_height):
+        for left in (0, width - tile_width):
+            tile = image[top:top + tile_height, left:left + tile_width]
+            if min(tile.shape[:2]) < 64:
+                continue
+            boxes = payload(next(iter(model("layout").predict(tile))))["boxes"]
+            for region in boxes:
+                if region["label"].lower() not in {"inline_formula", "display_formula", "formula", "image", "figure", "chart"}:
+                    continue
+                if float(region["score"]) < 0.6:
+                    continue
+                x, y, right, bottom = region["coordinate"]
+                coordinate = [x + left, y + top, right + left, bottom + top]
+                if any(existing["label"] == region["label"] and
+                       overlap(coordinate, existing["coordinate"]) > 0.65
+                       for existing in regions):
+                    continue
+                regions.append({**region, "coordinate": coordinate, "order": None})
+    return regions
+
+
 def recognize_page(path, surface, corners=None):
     with Image.open(path) as original:
         rgb = np.asarray(original.convert("RGB"))
@@ -117,7 +152,7 @@ def recognize_page(path, surface, corners=None):
     inverse = np.linalg.inv(transform)
     warnings = []
     try:
-        regions = payload(next(iter(model("layout").predict(image))))["boxes"]
+        regions = layout_regions(image, surface)
     except Exception as error:
         warnings.append(f"版面模型：{error}")
         regions = []
@@ -154,8 +189,12 @@ def recognize_page(path, surface, corners=None):
                and overlap(bounds(line["polygon"]), bounds(block["polygon"])) > 0.55]
         if not hit:
             continue
-        if any(not block["inline"] for block in hit):
+        if any(not block["inline"] and covered_fraction(bounds(line["polygon"]), bounds(block["polygon"])) > 0.85
+               for block in hit):
             lines.remove(line)
+            continue
+        hit = [block for block in hit if block["inline"]]
+        if not hit:
             continue
         x, y, right, bottom = bounds(line["polygon"])
         parts = []
