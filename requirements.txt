@@ -1,0 +1,8 @@
+fastapi>=0.115,<1
+uvicorn>=0.23,<1
+pillow>=11,<12
+pillow-heif>=0.18,<2
+paddleocr[doc-parser]==3.7.0
+paddlex[ocr]==3.7.2
+pypandoc-binary==1.17
+typst>=0.13,<1
