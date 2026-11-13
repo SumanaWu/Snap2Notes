@@ -302,6 +302,37 @@ def recognize_region(note_id: str, page_number: int, request: Region):
     return {**block, "markdown": block_markdown(block)}
 
 
+@app.get("/api/notes/{note_id}/pages/{page_number}/formula-candidates")
+def formula_candidates(note_id: str, page_number: int):
+    path = folder(note_id)
+    note = get_note(note_id)
+    if not 0 <= page_number < len(note["pages"]):
+        raise HTTPException(404, "图片不存在")
+    if note_id in pending:
+        raise HTTPException(409, "请等待整页识别完成")
+    python = Path(os.getenv("SNAP_MFD_PYTHON", str(DATA / "mfd-env" / "Scripts" / "python.exe")))
+    weights = Path(os.getenv("SNAP_MFD_MODEL", str(DATA / "mfd" / "pix2text-mfd-1.5.onnx")))
+    if not python.is_file() or not weights.is_file():
+        raise HTTPException(503, "请按照 README 安装可选的公式候选检测环境")
+    page = note["pages"][page_number]
+    with tempfile.TemporaryDirectory(dir=path) as temporary:
+        output = Path(temporary) / "candidates.json"
+        args = [str(python), str(ROOT / "evaluate_formula_detector.py"), str(weights),
+                str(path / page["file"]), "--surface", page.get("surface", "paper"),
+                "--tiles", "--output", str(output)]
+        environment = os.environ.copy()
+        environment["YOLO_CONFIG_DIR"] = str(DATA / "mfd-config")
+        try:
+            result = subprocess.run(args, capture_output=True, encoding="utf-8", errors="replace",
+                                    timeout=120, cwd=ROOT, env=environment)
+        except subprocess.TimeoutExpired as error:
+            raise HTTPException(504, "公式候选检测超时") from error
+        if result.returncode:
+            raise HTTPException(503, f"公式候选检测失败：{result.stderr[-800:]}")
+        detections = json.loads(output.read_text(encoding="utf-8"))["detections"]
+    return detections
+
+
 @app.get("/api/notes/{note_id}/summary")
 def summary(note_id: str):
     note = get_note(note_id)

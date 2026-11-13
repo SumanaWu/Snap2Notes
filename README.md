@@ -87,3 +87,16 @@ python evaluate_formula_detector.py 模型路径 照片路径 --surface blackboa
 ```
 
 大幅板书可以通过设置 `$env:SNAP_LAYOUT_TILES='1'` 试用重叠分块版面检测。在现有黑板和白板样例上，CPU 测试分别耗时约 26.6 秒和 14.7 秒，未检出额外公式或图形。该选项默认关闭，效果仍需在更多标注照片上验证。
+
+### 在网页中查找公式候选
+
+公式候选使用 Pix2Text 的独立环境。下面的命令在项目目录创建该环境并下载官方 MIT 许可的权重。需要安装系统 Python 3.12，首次安装会下载 PyTorch 等依赖。
+
+```powershell
+python -m venv data/mfd-env
+.\data\mfd-env\Scripts\python.exe -m pip install pix2text==1.1.4 cnstd==1.2.8 rapidocr==3.9.2 onnxruntime==1.19.2
+New-Item -ItemType Directory -Force data/mfd
+Invoke-WebRequest 'https://huggingface.co/breezedeus/pix2text-mfd-1.5/resolve/main/pix2text-mfd-1.5.onnx' -OutFile data/mfd/pix2text-mfd-1.5.onnx
+```
+
+重启网页服务，打开照片后点击“查找公式候选”。橙色框是待核对的区域。点击一个框，再点击“识别选中候选”，公式识别结果会插入编辑器的光标位置。检测可能误选文字或图形，请对照原图确认。可以通过 `SNAP_MFD_PYTHON` 和 `SNAP_MFD_MODEL` 指定独立环境与模型路径。

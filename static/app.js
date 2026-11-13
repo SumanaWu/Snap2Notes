@@ -6,6 +6,7 @@ let files = [];
 let selection = null;
 let firstPoint;
 let selectedBlock;
+let selectedCandidate;
 let timer;
 let lastSavedMarkdown = '';
 let lastSavedConfirmed = false;
@@ -124,6 +125,8 @@ async function openNote(id, page = 0) {
 function showPage(highlight = null) {
   selection = null;
   selectedBlock = null;
+  selectedCandidate = null;
+  $('accept-formula').hidden = true;
   const page = note.pages[Number($('page').value)];
   $('image').src = pageEndpoint('');
   $('boxes').setAttribute('viewBox', `0 0 ${page.width} ${page.height}`);
@@ -164,6 +167,48 @@ $('region').onclick = () => {
   firstPoint = null;
   $('block-info').textContent = '点击选区左上角和右下角。';
 };
+$('find-formulas').onclick = report(async () => {
+  const button = $('find-formulas');
+  button.disabled = true;
+  message('正在查找公式候选区域…');
+  try {
+    const pageIndex = Number($('page').value);
+    const candidates = await (await request(pageEndpoint('/formula-candidates'))).json();
+    if (pageIndex !== Number($('page').value)) return;
+    showPage();
+    for (const candidate of candidates) {
+      const shape = document.createElementNS(svgNS, 'polygon');
+      shape.setAttribute('points', candidate.polygon.map(point => point.join(',')).join(' '));
+      shape.classList.add('candidate');
+      shape.onclick = event => {
+        event.stopPropagation();
+        selectedCandidate = candidate;
+        $('boxes').querySelectorAll('.candidate').forEach(item => item.classList.remove('highlight'));
+        shape.classList.add('highlight');
+        $('accept-formula').hidden = false;
+        $('block-info').textContent = `公式候选 · 置信度 ${(candidate.score * 100).toFixed(1)}% · 请确认区域内容`;
+      };
+      $('boxes').append(shape);
+    }
+    message(candidates.length ? `找到 ${candidates.length} 个候选，请点击原图中的橙色区域核对。` : '未找到公式候选，请使用手动补圈。');
+  } finally {
+    button.disabled = false;
+  }
+});
+$('accept-formula').onclick = report(async () => {
+  if (!selectedCandidate) return;
+  const page = note.pages[Number($('page').value)];
+  const points = selectedCandidate.polygon;
+  const xs = points.map(point => point[0]);
+  const ys = points.map(point => point[1]);
+  const box = [Math.max(0, Math.floor(Math.min(...xs))), Math.max(0, Math.floor(Math.min(...ys))),
+    Math.min(page.width, Math.ceil(Math.max(...xs))), Math.min(page.height, Math.ceil(Math.max(...ys)))];
+  const result = await (await request(pageEndpoint('/region'), json('POST', {kind: 'formula', box}))).json();
+  note.pages[Number($('page').value)].blocks.push(result);
+  insert(result.markdown);
+  await save();
+  showPage();
+});
 $('boxes').onclick = report(async event => {
   if (!selection) return;
   const point = imagePoint(event);
