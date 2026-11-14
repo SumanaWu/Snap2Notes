@@ -59,8 +59,13 @@ def main():
                 "formula_blocks": sum(block["kind"] == "formula" for block in page["blocks"]),
             }))
         assert any(block["kind"] == "formula" and block["text"] for block in note["pages"][-1]["blocks"])
+        assert any(block["kind"] == "formula" and block["text"] == "1+1=3-1"
+                   for block in note["pages"][1]["blocks"]), "白板上的算式应成为独立公式块"
+        whiteboard_math = "$$\n1+1=3-1\n$$"
+        assert whiteboard_math in note["markdown"], "自动识别的算式应进入笔记正文"
         region = app.recognize_region(note_id, 0, app.Region(kind="figure", box=(10, 10, 180, 150)))
-        app.update_note(note_id, app.Note(markdown=region["markdown"] + "\n\n$$x^2+1$$", confirmed=True))
+        # 用真实识别的白板公式验证四种导出，同时保留图像资源检查。
+        app.update_note(note_id, app.Note(markdown=region["markdown"] + "\n\n" + whiteboard_math, confirmed=True))
         verify_exports(note_id)
         print("识别和四种导出检查通过")
 

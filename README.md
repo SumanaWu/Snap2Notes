@@ -70,7 +70,7 @@ git push -u origin main
 | `paper.jpg` | SucreRouge，CC BY-SA 3.0。[纸质笔记实拍](https://commons.wikimedia.org/wiki/File:Mathnote894462.jpg) |
 | `formula.png` | PaddleOCR 官方公式模块示例。[示例文档](https://www.paddleocr.ai/latest/en/version3.x/module_usage/formula_recognition.html) · [原图](https://paddle-model-ecology.bj.bcebos.com/paddlex/imgs/demo_image/general_formula_rec_001.png) |
 
-首轮 CPU 测试在三张实拍上分别识别出 27、4、21 个文字块。版面模型在这三张实拍上未定位出公式或图形，官方公式样例可自动定位并转录。实拍中的漏检区域可以在原图上手动补圈，或通过网页查找候选区域后逐个核对。
+版面模型可以定位并转录官方公式样例。版面模型漏掉白板上的 `1+1=3-1`，PP-OCRv6 small 直接读对了整行，PP-FormulaNet_plus-S 对 OCR 行框的裁剪则读成了 `I+I=3-I`。因此主流程会将置信度至少为 0.95、整行符合数字等式语法且包含算术运算的 OCR 结果转成公式块，沿用该行的原图坐标。复杂公式仍由版面和公式模型处理，漏检区域可在原图手动补圈或通过 Pix2Text 候选校订。 [PaddleOCR 公式模型文档](https://www.paddleocr.ai/latest/en/version3.x/module_usage/formula_recognition.html) · [Pix2Text 混合识别源码](https://github.com/breezedeus/Pix2Text/blob/main/pix2text/text_formula_ocr.py)
 
 
 
@@ -78,15 +78,34 @@ git push -u origin main
 
 下载上表四张照片后，可用 `python benchmark.py docs/sample-benchmark.json --pipeline full --repeats 3` 复现小样本基准。脚本先加载首张图并记录耗时，再把其余图片跑一遍，最后重复计时。清单包含黑板、白板和独立公式图的 10 个公式标注。定位按原图矩形 IoU ≥ 0.5 一对一匹配，整式转录按去空白后的 LaTeX 字符串比较。这个指标会把一些等价写法计为不同。纸质照片参与计时，尚未标注公式。CER 和 WER 需要补充人工转录后才能计算。
 
-RTX 4090 使用 PP-OCRv6 small、PP-DocLayoutV3 和 PP-FormulaNet_plus-S，4 张图各重复 3 次，预热后 P50 为 0.258 秒，P95 为 0.461 秒。Paddle 提示编译时 cuDNN 为 9.9，本次安装的运行库为 9.5，样例推理成功。独立公式图是完整流程唯一匹配的公式区域，定位召回为 1/10。整式字符串与参考不同，整式召回为 0/10。
+图形标注使用 `"figures": [{"box": [左, 上, 右, 下]}]`，坐标对应 EXIF 方向校正后的原图。黑板上的消息箭头作为一个流程图标注，白板和独立公式图是已核对的无图样例。空数组表示已核对且无图，省略字段表示该页暂不参加图形评分。图形与公式定位使用同一 IoU 阈值。RTX 4090 上用 small 跑完整流程，三个已标注页面没有自动输出图形框，图形召回为 0/1。
 
-| 流程 | 首张图（秒） | 预热 P50（秒） | 预热 P95（秒） | 公式定位匹配 |
-| --- | ---: | ---: | ---: | ---: |
-| 原图文字 OCR，CPU | 10.836 | 2.910 | 6.571 | 0/10 |
-| 完整流程，CPU | 15.433 | 4.615 | 9.614 | 1/10 |
-| 完整流程，RTX 4090 | 11.297 | 0.258 | 0.461 | 1/10 |
+以下完整流程均使用 PP-DocLayoutV3。除 UniMERNet 对照外，表中公式转录使用 PP-FormulaNet_plus-S。RTX 4090 每次在独立进程加载模型，四张图各重复三次。Paddle 提示编译时 cuDNN 为 9.9，本机运行库为 9.5，样例推理成功。
+
+| 流程 | 首张图（秒） | 预热 P50（秒） | 预热 P95（秒） | 公式定位匹配 | 整式转录匹配 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 原图文字 OCR，CPU，历史结果 | 10.836 | 2.910 | 6.571 | 0/10 | 0/10 |
+| 完整流程，CPU，历史结果 | 15.433 | 4.615 | 9.614 | 1/10 | 0/10 |
+| 完整流程，CPU，small，改动后 | 11.661 | 4.122 | 7.104 | 2/10 | 1/10 |
+| 完整流程，RTX 4090，small，改动前 | 6.852 | 0.191 | 0.280 | 1/10 | 0/10 |
+| 完整流程，RTX 4090，small，改动后 | 7.662 | 0.191 | 0.280 | 2/10 | 1/10 |
+| 完整流程，RTX 4090，medium，改动后 | 9.140 | 0.214 | 0.337 | 2/10 | 1/10 |
+| 完整流程，RTX 4090，small + UniMERNet，改动后 | 6.665 | 0.195 | 1.200 | 2/10 | 1/10 |
+
+改动后两种 OCR 在三个有标注的页面均只输出两个公式框，分别匹配白板和官方公式图。白板整式匹配，官方公式图的 LaTeX 字符串与参考仍有差异，八处黑板标注仍漏检。白板公式参与规则开发，结果用于回归验证。手写识别模型比较仍需按照片来源划分的独立留出集。 [UniMERNet 论文与实景公式评测](https://openaccess.thecvf.com/content/CVPR2026/html/Gu_UniMERNet_A_Universal_Network_for_Real-World_Mathematical_Expression_Recognition_CVPR_2026_paper.html)
 
 Pix2Text 在同样三张有公式标注的图上共返回 7 个候选，其中 3 个与标注匹配。黑板与白板使用分块，黑板额外反色，独立公式图使用整图。候选匹配数为 3/7，标注召回为 3/10，适合继续作为人工校订入口。这批图用于功能验证与初步对照，完整留出集和其他模型对照仍待补充。
+
+### 单独测量公式转录
+
+```powershell
+$env:SNAP_FORMULA_MODEL = 'PP-FormulaNet_plus-S'
+python benchmark.py docs/sample-benchmark.json --pipeline formula-crops
+$env:SNAP_FORMULA_MODEL = 'UniMERNet'
+python benchmark.py docs/sample-benchmark.json --pipeline formula-crops
+```
+
+这个模式按人工标注框从方向校正后的原图裁剪，黑板裁剪反色。输出逐框参考、预测和整式匹配结果，耗时包含模型加载。RTX 4090 上 PP-FormulaNet_plus-S 在 8.165 秒内得到 0/10 整式字符串匹配，UniMERNet 在 11.918 秒内得到 1/10。UniMERNet 读对了白板等式，两种模型的八处黑板转录都与参考不一致。官方印刷样例的输出与参考有 LaTeX 分组和间距差异。UniMERNet 测试权重来自 PaddlePaddle 发布的 `795faf5` 版本。 [PaddleOCR 公式模块](https://www.paddleocr.ai/latest/en/version3.x/module_usage/formula_recognition.html) · [UniMERNet 官方权重](https://huggingface.co/PaddlePaddle/UniMERNet/tree/795faf56325b38c845bbc31535d661e4c72e5fe0) · [CDM 公式评测论文](https://openaccess.thecvf.com/content/CVPR2025/papers/Wang_Image_Over_Text_Transforming_Formula_Recognition_Evaluation_with_Character_Detection_CVPR_2025_paper.pdf)
 
 ## Pix2Text 公式检测对照
 

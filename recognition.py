@@ -1,3 +1,9 @@
+
+
+
+
+
+
 import os
 import re
 from functools import lru_cache
@@ -5,6 +11,20 @@ from functools import lru_cache
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
+
+
+# 只接收整行由数字、算术运算符和一个等号组成的等式。
+NUMBER = r"[0-9]+(?:\.[0-9]+)?"
+ARITHMETIC = rf"-?{NUMBER}(?:[+\-×÷*]{NUMBER})*"
+NUMERIC_EQUATION = re.compile(rf"{ARITHMETIC}={ARITHMETIC}")
+NUMERIC_OPERATION = re.compile(r"[0-9][+\-×÷*][0-9]")
+EQUATION_SIGNS = str.maketrans("−＋－＝", "-+-=")
+LATEX_OPERATORS = {"×": r"\times ", "*": r"\times ", "÷": r"\div "}
+
+
+def formula_model_name(device):
+    default = "UniMERNet" if device.startswith("gpu") else "PP-FormulaNet_plus-S"
+    return os.getenv("SNAP_FORMULA_MODEL", default)
 
 
 @lru_cache
@@ -15,8 +35,7 @@ def model(kind):
         return create_model("PP-DocLayoutV3", device=device)
     if kind == "formula":
         from paddleocr import FormulaRecognition
-        default = "UniMERNet" if device.startswith("gpu") else "PP-FormulaNet_plus-S"
-        return FormulaRecognition(model_name=os.getenv("SNAP_FORMULA_MODEL", default), device=device,
+        return FormulaRecognition(model_name=formula_model_name(device), device=device,
                                   enable_mkldnn=False)
     from paddleocr import PaddleOCR
     size = os.getenv("SNAP_OCR_SIZE", "medium" if device.startswith("gpu") else "small")
@@ -221,6 +240,19 @@ def recognize_page(path, surface, corners=None):
             if (x <= lx and lr <= right) and (y <= ly and lb <= bottom or near_bottom):
                 labels.append(line["text"])
         figure["text"] = " · ".join(labels)
+
+    # 版面漏检时，采用 OCR 已完整读出的简单等式。保留原行的坐标和置信度。
+    for line in lines:
+        if line["kind"] != "text" or line["score"] < 0.95:
+            continue
+        equation = re.sub(r"\s*([+=×÷*\-])\s*", r"\1", line["text"].strip().translate(EQUATION_SIGNS))
+        if not NUMERIC_EQUATION.fullmatch(equation) or not NUMERIC_OPERATION.search(equation):
+            continue
+        line_box = bounds(line["polygon"])
+        if any(overlap(line_box, bounds(block["polygon"])) > 0.55 for block in formulas):
+            continue
+        line.update(kind="formula", inline=False,
+                    text="".join(LATEX_OPERATORS.get(sign, sign) for sign in equation))
 
     blocks = lines + [block for block in formulas if id(block) not in inserted] + figures
     def reading_order(block):

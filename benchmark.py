@@ -1,4 +1,4 @@
-"""对标注照片比较原图 OCR 与完整流程，输出 CER、WER 和耗时。"""
+"""对标注照片评估原图 OCR、完整流程或单独的公式转录。"""
 import argparse
 import json
 import math
@@ -15,7 +15,7 @@ from PIL import Image, ImageOps
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 import app
-from recognition import bounds, plain_ocr, recognize_page
+from recognition import bounds, formula_model_name, model, payload, plain_ocr, recognize_page
 
 
 def edits(reference, actual):
@@ -39,6 +39,47 @@ def run_image(path, surface, pipeline):
     return blocks
 
 
+def formula_text(text):
+    return re.sub(r"\s+", "", text.strip().strip("$"))
+
+
+def evaluate_formula_crops(manifest):
+    """用标注框裁剪公式，单独测量转录错误。"""
+    samples = json.loads(manifest.read_text(encoding="utf-8"))
+    started = time.perf_counter()
+    details = []
+    for item in samples:
+        formulas = item.get("formulas", [])
+        if not formulas:
+            continue
+        with Image.open(manifest.parent / item["image"]) as photo:
+            rgb = ImageOps.exif_transpose(photo).convert("RGB")
+            patches = []
+            for annotation in formulas:
+                left, top, right, bottom = annotation["box"]
+                if not (0 <= left < right <= rgb.width and 0 <= top < bottom <= rgb.height):
+                    raise ValueError(f"公式框超出原图范围：{item['image']} {annotation['box']}")
+                patch = np.asarray(rgb.crop((left, top, right, bottom)))
+                if item["surface"] == "blackboard":
+                    patch = cv2.bitwise_not(patch)
+                patches.append(cv2.cvtColor(patch, cv2.COLOR_RGB2BGR))
+        predictions = model("formula").predict(patches, batch_size=2)
+        for annotation, prediction in zip(formulas, predictions, strict=True):
+            actual = str(payload(prediction)["rec_formula"])
+            details.append({
+                "image": item["image"], "box": annotation["box"],
+                "reference": annotation["latex"], "prediction": actual,
+                "exact": formula_text(actual) == formula_text(annotation["latex"]),
+            })
+    if not details:
+        raise ValueError("公式裁剪评测至少需要一个带框的公式标注")
+    device = os.getenv("SNAP_DEVICE", "cpu")
+    return {"pipeline": "formula-crops", "device": device,
+            "formula_model": formula_model_name(device),
+            "formulas": len(details), "exact": sum(row["exact"] for row in details),
+            "seconds": round(time.perf_counter() - started, 3), "details": details}
+
+
 def box_iou(first, second):
     left, top, right, bottom = first
     other_left, other_top, other_right, other_bottom = second
@@ -49,9 +90,8 @@ def box_iou(first, second):
     return intersection / union if union > 0 else 0.0
 
 
-def score_formulas(expected, blocks):
+def match_regions(expected, predicted):
     # 标注与预测各最多匹配一次，避免重复候选抬高召回。
-    predicted = [block for block in blocks if block["kind"] == "formula"]
     pairs = sorted(
         ((box_iou(item["box"], bounds(block["polygon"])), i, j)
          for i, item in enumerate(expected) for j, block in enumerate(predicted)),
@@ -59,7 +99,6 @@ def score_formulas(expected, blocks):
     )
     matched_expected = set()
     matched_predicted = set()
-    exact = 0
     for iou, i, j in pairs:
         if iou < 0.5:
             break
@@ -67,9 +106,15 @@ def score_formulas(expected, blocks):
             continue
         matched_expected.add(i)
         matched_predicted.add(j)
-        if re.sub(r"\s+", "", expected[i]["latex"]) == re.sub(r"\s+", "", predicted[j]["text"]):
-            exact += 1
-    return len(predicted), len(matched_expected), exact
+        yield expected[i], predicted[j]
+
+
+def score_formulas(expected, blocks):
+    predicted = [block for block in blocks if block["kind"] == "formula"]
+    matches = list(match_regions(expected, predicted))
+    exact = sum(formula_text(annotation["latex"]) == formula_text(block["text"])
+                for annotation, block in matches)
+    return len(predicted), len(matches), exact
 
 
 def evaluate(manifest, pipeline, repeats=1):
@@ -87,6 +132,7 @@ def evaluate(manifest, pipeline, repeats=1):
     times = []
     expected_formulas = predicted_formulas = matched_formulas = exact_formulas = 0
     formula_pages = 0
+    figure_pages = expected_figures = predicted_figures = matched_figures = 0
     for trial in range(repeats):
         for item in samples:
             started = time.perf_counter()
@@ -101,6 +147,12 @@ def evaluate(manifest, pipeline, repeats=1):
                 predicted_formulas += predicted
                 matched_formulas += matched
                 exact_formulas += exact
+            if "figures" in item:
+                figure_pages += 1
+                expected_figures += len(item["figures"])
+                figures = [block for block in blocks if block["kind"] == "figure"]
+                predicted_figures += len(figures)
+                matched_figures += sum(1 for _ in match_regions(item["figures"], figures))
             if "text" not in item:
                 continue
             reference = " ".join(item["text"].split())
@@ -121,6 +173,9 @@ def evaluate(manifest, pipeline, repeats=1):
         "formula_region_precision": matched_formulas / predicted_formulas if predicted_formulas else None,
         "formula_region_recall": matched_formulas / expected_formulas if expected_formulas else None,
         "formula_exact_recall": exact_formulas / expected_formulas if expected_formulas else None,
+        "figure_pages": figure_pages,
+        "figure_region_precision": matched_figures / predicted_figures if predicted_figures else None,
+        "figure_region_recall": matched_figures / expected_figures if expected_figures else None,
         "first_seconds": round(cold_seconds, 3),
         "warm_p50_seconds": round(statistics.median(warm), 3),
         "warm_p95_seconds": round(warm[math.ceil(0.95 * len(warm)) - 1], 3),
@@ -130,7 +185,13 @@ def evaluate(manifest, pipeline, repeats=1):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
-    parser.add_argument("--pipeline", choices=("raw", "full"), required=True)
+    parser.add_argument("--pipeline", choices=("raw", "full", "formula-crops"), required=True)
     parser.add_argument("--repeats", type=int, default=1)
     args = parser.parse_args()
-    print(json.dumps(evaluate(args.manifest, args.pipeline, args.repeats), indent=2))
+    if args.pipeline == "formula-crops":
+        if args.repeats != 1:
+            parser.error("公式裁剪模式每个标注框运行一次")
+        report = evaluate_formula_crops(args.manifest)
+    else:
+        report = evaluate(args.manifest, args.pipeline, args.repeats)
+    print(json.dumps(report, indent=2, ensure_ascii=False))

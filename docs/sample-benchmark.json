@@ -2,6 +2,7 @@
   {
     "image": "../data/samples/blackboard.jpg",
     "surface": "blackboard",
+    "figures": [{"box": [935, 1065, 2640, 1675]}],
     "formulas": [
       {"box": [130, 1060, 850, 1270], "latex": "A=g^a\\bmod p"},
       {"box": [1345, 855, 1815, 1080], "latex": "B'=g^{b'}\\bmod p"},
@@ -16,12 +17,14 @@
   {
     "image": "../data/samples/whiteboard.jpg",
     "surface": "whiteboard",
+    "figures": [],
     "formulas": [{"box": [459, 264, 668, 319], "latex": "1+1=3-1"}]
   },
   {"image": "../data/samples/paper.jpg", "surface": "paper"},
   {
     "image": "../data/samples/formula.png",
     "surface": "paper",
+    "figures": [],
     "formulas": [
       {
         "box": [0, 0, 420, 46],
