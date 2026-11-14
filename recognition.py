@@ -4,7 +4,7 @@ from functools import lru_cache
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 @lru_cache
@@ -19,7 +19,9 @@ def model(kind):
         return FormulaRecognition(model_name=os.getenv("SNAP_FORMULA_MODEL", default), device=device,
                                   enable_mkldnn=False)
     from paddleocr import PaddleOCR
-    size = "medium" if device.startswith("gpu") else "small"
+    size = os.getenv("SNAP_OCR_SIZE", "medium" if device.startswith("gpu") else "small")
+    if size not in {"small", "medium"}:
+        raise ValueError("SNAP_OCR_SIZE 必须为 small 或 medium")
     return PaddleOCR(
         device=device, enable_mkldnn=False, text_detection_model_name=f"PP-OCRv6_{size}_det",
         text_recognition_model_name=f"PP-OCRv6_{size}_rec",
@@ -147,7 +149,7 @@ def layout_regions(image, surface):
 
 def recognize_page(path, surface, corners=None):
     with Image.open(path) as original:
-        rgb = np.asarray(original.convert("RGB"))
+        rgb = np.asarray(ImageOps.exif_transpose(original).convert("RGB"))
     image, transform = prepare(rgb, surface, corners)
     inverse = np.linalg.inv(transform)
     warnings = []

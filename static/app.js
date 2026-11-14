@@ -119,6 +119,7 @@ async function openNote(id, page = 0) {
   lastSavedMarkdown = note.markdown;
   lastSavedConfirmed = Boolean(note.confirmed);
   previewMath();
+  previewFigures();
   showPage();
 }
 
@@ -173,8 +174,9 @@ $('find-formulas').onclick = report(async () => {
   message('正在查找公式候选区域…');
   try {
     const pageIndex = Number($('page').value);
+    const requestedNote = noteId;
     const candidates = await (await request(pageEndpoint('/formula-candidates'))).json();
-    if (pageIndex !== Number($('page').value)) return;
+    if (requestedNote !== noteId || pageIndex !== Number($('page').value)) return;
     showPage();
     for (const candidate of candidates) {
       const shape = document.createElementNS(svgNS, 'polygon');
@@ -196,18 +198,20 @@ $('find-formulas').onclick = report(async () => {
   }
 });
 $('accept-formula').onclick = report(async () => {
-  if (!selectedCandidate) return;
+  const button = $('accept-formula');
+  if (!selectedCandidate || button.disabled) return;
   const page = note.pages[Number($('page').value)];
   const points = selectedCandidate.polygon;
   const xs = points.map(point => point[0]);
   const ys = points.map(point => point[1]);
   const box = [Math.max(0, Math.floor(Math.min(...xs))), Math.max(0, Math.floor(Math.min(...ys))),
     Math.min(page.width, Math.ceil(Math.max(...xs))), Math.min(page.height, Math.ceil(Math.max(...ys)))];
-  const result = await (await request(pageEndpoint('/region'), json('POST', {kind: 'formula', box}))).json();
-  note.pages[Number($('page').value)].blocks.push(result);
-  insert(result.markdown);
-  await save();
-  showPage();
+  button.disabled = true;
+  try {
+    await insertRegion('formula', box);
+  } finally {
+    button.disabled = false;
+  }
 });
 $('boxes').onclick = report(async event => {
   if (!selection) return;
@@ -231,12 +235,20 @@ $('boxes').onclick = report(async event => {
   const kind = selection.kind;
   selection = null;
   const box = [Math.min(x, right), Math.min(y, bottom), Math.max(x, right) + 1, Math.max(y, bottom) + 1];
+  await insertRegion(kind, box);
+});
+
+async function insertRegion(kind, box) {
+  const requestedNote = noteId;
+  const pageIndex = Number($('page').value);
   const result = await (await request(pageEndpoint('/region'), json('POST', {kind, box}))).json();
-  note.pages[Number($('page').value)].blocks.push(result);
+  // 推理期间可以切换照片或笔记。始终归档到原照片，仅在仍打开原笔记时插入正文。
+  if (requestedNote !== noteId) return;
+  note.pages[pageIndex].blocks.push(result);
   insert(result.markdown);
   await save();
-  showPage();
-});
+  if (requestedNote === noteId && pageIndex === Number($('page').value)) showPage();
+}
 
 function previewMath() {
   const source = $('markdown').value;
@@ -250,12 +262,27 @@ function previewMath() {
   }));
 }
 
+function previewFigures() {
+  const matches = [...$('markdown').value.matchAll(/!\[([^\]]*)\]\(assets\/([a-f0-9]{32}\.jpg)\)/g)];
+  $('figure-preview').replaceChildren(...matches.map(match => {
+    const figure = document.createElement('figure');
+    const image = document.createElement('img');
+    image.src = endpoint(`/assets/${match[2]}`);
+    image.alt = match[1] || '笔记图片';
+    const caption = document.createElement('figcaption');
+    caption.textContent = match[1];
+    figure.append(image, caption);
+    return figure;
+  }));
+}
+
 function insert(text) {
   if (!text) return;
   const editor = $('markdown');
   editor.setRangeText(`\n\n${text}\n\n`, editor.selectionStart, editor.selectionEnd, 'end');
   $('confirmed').checked = false;
   previewMath();
+  previewFigures();
 }
 
 async function save() {
@@ -272,12 +299,12 @@ function isDirty() {
 }
 async function retry(corners = null) {
   const index = Number($('page').value);
-  if ($('markdown').value !== note.markdown) await save();
+  if (isDirty()) await save();
   await request(pageEndpoint('/retry'), json('POST', {corners}));
   await openNote(noteId, index);
 }
 
-$('markdown').oninput = () => { $('confirmed').checked = false; previewMath(); };
+$('markdown').oninput = () => { $('confirmed').checked = false; previewMath(); previewFigures(); };
 $('history').onchange = report(async () => {
   const selected = $('history').value;
   if (!selected || selected === noteId) return;

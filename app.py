@@ -247,6 +247,16 @@ def get_page(note_id: str, page_number: int):
     return FileResponse(path / pages[page_number]["file"])
 
 
+@app.get("/api/notes/{note_id}/assets/{filename}")
+def get_asset(note_id: str, filename: str):
+    if not re.fullmatch(r"[a-f0-9]{32}\.jpg", filename):
+        raise HTTPException(404, "图片不存在")
+    asset = folder(note_id) / "assets" / filename
+    if not asset.is_file():
+        raise HTTPException(404, "图片不存在")
+    return FileResponse(asset, media_type="image/jpeg")
+
+
 @app.post("/api/notes/{note_id}/pages/{page_number}/retry")
 def retry_page(note_id: str, page_number: int, request: Retry):
     path = folder(note_id)
@@ -354,6 +364,9 @@ def export(note_id: str, format: str):
     if format not in ("md", "tex", "docx", "pdf"):
         raise HTTPException(400, "不支持此格式")
     assets = sorted(set(re.findall(r"\]\(assets/([a-f0-9]{32}\.jpg)\)", markdown)))
+    missing = [name for name in assets if not (path / "assets" / name).is_file()]
+    if missing:
+        raise HTTPException(422, "笔记中引用的图片不存在：" + ", ".join(missing))
     if format == "md":
         return download(markdown.encode("utf-8"), format, path, assets)
     pandoc = shutil.which("pandoc")

@@ -16,13 +16,13 @@ $env:PADDLE_PDX_MODEL_SOURCE = 'bos'
 
 打开 [本地网页](http://127.0.0.1:8000)。首次识别下载官方模型到 `data/paddlex`，之后可使用本地缓存。照片、笔记和裁剪图也存放在 `data/`。识别任务中断时，可以从历史笔记重试单页。
 
-GPU 使用单独的虚拟环境，先按官方指南安装 CUDA 12.6 对应的 PaddlePaddle 3.3.0，再安装项目依赖，并设置 `$env:SNAP_DEVICE = 'gpu:0'`。公式模型可以通过 `SNAP_FORMULA_MODEL` 切换。已验证的环境是 Windows CPU。 [PaddlePaddle Windows 安装](https://github.com/PaddlePaddle/docs/blob/develop/docs/install/pip/windows-pip.md)
+GPU 使用单独的虚拟环境，先按官方指南安装 CUDA 12.6 对应的 PaddlePaddle 3.3.0 及其运行库，再安装项目依赖，并设置 `$env:SNAP_DEVICE = 'gpu:0'`。可用 `SNAP_OCR_SIZE` 选择 `small` 或 `medium`，通过 `SNAP_FORMULA_MODEL` 选择公式模型。为复现下方 RTX 4090 对照，使用 `small` 和 `PP-FormulaNet_plus-S`，与 CPU 使用相同权重。 [PaddlePaddle Windows 安装](https://github.com/PaddlePaddle/docs/blob/develop/docs/install/pip/windows-pip.md)
 
 ## 使用
 
 1. 选择最多 12 张照片，逐张选纸张、白板或黑板，需要时上移调整顺序。拍自同一板面时勾选多图合并。
 2. 在原图上点识别框核对文字。识别漏掉的区域可以补圈。斜拍照片可以标记四角后重试。重试保留已保存的正文，新结果可从识别稿插入。
-3. 在编辑器修改文字、公式和顺序。疑似改写保留在识别稿，由用户编辑正文决定保留哪些内容。勾选已确认后，可以查看有原图出处的原文摘录。
+3. 在编辑器修改文字、公式和顺序。笔记中引用的裁剪图会显示在编辑区下方，丢失的图片会在导出时提示。疑似改写保留在识别稿，由用户编辑正文决定保留哪些内容。勾选已确认后，可以查看有原图出处的原文摘录。
 4. 下载所需格式。含裁剪图的 Markdown 和 LaTeX 为带图片的 ZIP。Word 由 Pandoc 写入可编辑的 OMML 公式。PDF 由 Pandoc 转换为 Typst，再在本机排版。
 
 ## 第三方实现与研究
@@ -70,11 +70,23 @@ git push -u origin main
 | `paper.jpg` | SucreRouge，CC BY-SA 3.0。[纸质笔记实拍](https://commons.wikimedia.org/wiki/File:Mathnote894462.jpg) |
 | `formula.png` | PaddleOCR 官方公式模块示例。[示例文档](https://www.paddleocr.ai/latest/en/version3.x/module_usage/formula_recognition.html) · [原图](https://paddle-model-ecology.bj.bcebos.com/paddlex/imgs/demo_image/general_formula_rec_001.png) |
 
-首轮 CPU 测试在三张实拍上分别识别出 27、4、21 个文字块。版面模型在这三张实拍上未定位出公式或图形，官方公式样例可自动定位并转录。实拍中的漏检区域可以在原图上手动补圈。样例结果仅用于冒烟验证，留出集准确率、GPU P95 和候选模型对照需要进一步实测。
+首轮 CPU 测试在三张实拍上分别识别出 27、4、21 个文字块。版面模型在这三张实拍上未定位出公式或图形，官方公式样例可自动定位并转录。实拍中的漏检区域可以在原图上手动补圈，或通过网页查找候选区域后逐个核对。
 
 
 
 标注后可用 `benchmark.py` 比较原图 OCR 和完整流程。清单为 JSON 数组，每项填写相对于清单的 `image`、`surface` 和人工转录的 `text`，例如 `{"image":"blackboard.jpg","surface":"blackboard","text":"人工转录"}`。固定同一清单和图片顺序，分别在独立进程运行 `python benchmark.py manifest.json --pipeline raw` 与 `python benchmark.py manifest.json --pipeline full`。两次运行均使用同一个虚拟环境和设备配置。
+
+下载上表四张照片后，可用 `python benchmark.py docs/sample-benchmark.json --pipeline full --repeats 3` 复现小样本基准。脚本先加载首张图并记录耗时，再把其余图片跑一遍，最后重复计时。清单包含黑板、白板和独立公式图的 10 个公式标注。定位按原图矩形 IoU ≥ 0.5 一对一匹配，整式转录按去空白后的 LaTeX 字符串比较。这个指标会把一些等价写法计为不同。纸质照片参与计时，尚未标注公式。CER 和 WER 需要补充人工转录后才能计算。
+
+RTX 4090 使用 PP-OCRv6 small、PP-DocLayoutV3 和 PP-FormulaNet_plus-S，4 张图各重复 3 次，预热后 P50 为 0.258 秒，P95 为 0.461 秒。Paddle 提示编译时 cuDNN 为 9.9，本次安装的运行库为 9.5，样例推理成功。独立公式图是完整流程唯一匹配的公式区域，定位召回为 1/10。整式字符串与参考不同，整式召回为 0/10。
+
+| 流程 | 首张图（秒） | 预热 P50（秒） | 预热 P95（秒） | 公式定位匹配 |
+| --- | ---: | ---: | ---: | ---: |
+| 原图文字 OCR，CPU | 10.836 | 2.910 | 6.571 | 0/10 |
+| 完整流程，CPU | 15.433 | 4.615 | 9.614 | 1/10 |
+| 完整流程，RTX 4090 | 11.297 | 0.258 | 0.461 | 1/10 |
+
+Pix2Text 在同样三张有公式标注的图上共返回 7 个候选，其中 3 个与标注匹配。黑板与白板使用分块，黑板额外反色，独立公式图使用整图。候选匹配数为 3/7，标注召回为 3/10，适合继续作为人工校订入口。这批图用于功能验证与初步对照，完整留出集和其他模型对照仍待补充。
 
 ## Pix2Text 公式检测对照
 
